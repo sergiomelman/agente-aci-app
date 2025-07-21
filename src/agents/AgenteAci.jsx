@@ -1,5 +1,10 @@
-import React from 'react';
-import { useAciProcessor } from '../hooks/useAciProcessor'; // Corrigido o caminho do import
+import React, { useState } from 'react'; // Embora o React esteja no escopo global no Vite agora, é uma boa prática mantê-lo.
+import { useAciProcessor } from '@/hooks/useAciProcessor';
+import { useApo } from '@/context/ApoContext';
+import { useGoogleLogin } from '@react-oauth/google';
+import GoogleDriveImporter from '@/components/GoogleDriveImporter';
+import TrelloImporter from '@/components/TrelloImporter';
+
 
 // Componente para a seção de resultados
 const ResultsDisplay = ({ data }) => (
@@ -87,7 +92,7 @@ const ResultsDisplay = ({ data }) => (
 );
 
 // Componente principal da aplicação
-const App = () => {
+const AgenteAci = () => {
   const {
     inputContent,
     selectedFile,
@@ -97,11 +102,81 @@ const App = () => {
     ocrProgress,
     handleFileChange,
     handleInputChange,
+    handleFileSelect,
+    handleTextSelect,
     processContent,
   } = useAciProcessor();
 
+  const { sendToApo } = useApo();
+
+  // Estado e handlers para o modal do Google
+  const [isGoogleDriveImporterOpen, setIsGoogleDriveImporterOpen] = useState(false);
+  const [googleAccessToken, setGoogleAccessToken] = useState(null);
+
+  // Handlers para o login do Google
+  const handleGoogleLoginSuccess = (tokenResponse) => {
+    console.log('Token de Acesso do Google:', tokenResponse.access_token);
+    setGoogleAccessToken(tokenResponse.access_token);
+    setIsGoogleDriveImporterOpen(true);
+  };
+
+  const handleGoogleLoginError = (error) => {
+    console.error('Falha no login com Google.');
+    // O erro 'access_denied' geralmente significa que o usuário não está na lista de testadores.
+    if (error && error.type === 'access_denied') {
+      alert('Acesso negado. Verifique se seu e-mail está na lista de "Usuários de teste" no Google Cloud Console.');
+    } else {
+      alert('Falha no login com Google.');
+    }
+  };
+
+  const googleLogin = useGoogleLogin({
+    onSuccess: handleGoogleLoginSuccess,
+    onError: handleGoogleLoginError,
+    scope: 'https://www.googleapis.com/auth/drive.readonly', // Escopo para ler arquivos do Drive/Docs
+  });
+  // Estado e handlers para o modal do Trello
+  const [isTrelloImporterOpen, setIsTrelloImporterOpen] = useState(false);
+
+  const handleTrelloImport = (content) => {
+    handleTextSelect(content); // Popula o textarea com o conteúdo do cartão
+    setIsTrelloImporterOpen(false); // Fecha o modal após a importação
+  };
+
+  const openTrelloImporter = () => setIsTrelloImporterOpen(true);
+  const closeTrelloImporter = () => setIsTrelloImporterOpen(false);
+
+  const closeGoogleDriveImporter = () => {
+    setIsGoogleDriveImporterOpen(false);
+    setGoogleAccessToken(null); // Limpa o token ao fechar
+  };
+
+  const handleSendToApo = () => {
+    if (normalizedDataForAPO) {
+      // Mapeia os dados do ACI para o formato que o APO espera
+      const dataForApo = {
+        ...normalizedDataForAPO, // Mantém todos os dados originais
+        suggestedTitle: normalizedDataForAPO.detectedMetadata.title || 'Sem título',
+        contentType: normalizedDataForAPO.detectedMetadata.types.join(', ') || 'Não classificado',
+      };
+      sendToApo(dataForApo);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+      <TrelloImporter
+        isOpen={isTrelloImporterOpen}
+        onClose={closeTrelloImporter}
+        onImport={handleTrelloImport}
+      />
+      <GoogleDriveImporter
+        isOpen={isGoogleDriveImporterOpen}
+        onClose={closeGoogleDriveImporter}
+        accessToken={googleAccessToken}
+        handleFileSelect={handleFileSelect}
+        handleTextSelect={handleTextSelect}
+      />
       <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-3xl border border-gray-200">
         <h1 className="text-3xl font-bold text-gray-800 mb-6 text-center">
           Agente de Captura e Ingestão (ACI)
@@ -131,14 +206,14 @@ const App = () => {
 
         <div className="mb-8">
           <label htmlFor="fileInput" className="block text-gray-700 text-sm font-semibold mb-2">
-            Upload de Imagem/PDF (OCR):
+            Upload de Arquivo (Imagem, PDF, .md, .txt):
           </label>
           <input
             type="file"
             id="fileInput"
             className="w-full p-3 border border-gray-300 rounded-md bg-gray-50 text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition duration-200 ease-in-out"
             onChange={handleFileChange}
-            accept=".pdf, .jpg, .jpeg, .png"
+            accept=".pdf,.jpg,.jpeg,.png,.md,.txt"
             disabled={isLoading}
           />
           {selectedFile && (
@@ -150,6 +225,25 @@ const App = () => {
               <p className="text-xs text-blue-600 text-center mt-1">{ocrProgress}%</p>
             </div>
           )}
+        </div>
+
+        {/* Seção de Integrações com outras plataformas */}
+        <div className="my-8">
+           <h3 className="text-lg font-semibold text-gray-700 mb-4 text-center border-t pt-6">
+            Ou importe de outras fontes
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* O handler onClick aqui iniciaria o fluxo de autenticação e busca de dados da API específica */}
+            <button onClick={() => googleLogin()} className="p-3 bg-blue-100 text-blue-800 rounded-md font-semibold hover:bg-blue-200 transition duration-200 ease-in-out">
+              Importar do Google Drive
+            </button>
+            <button onClick={openTrelloImporter} className="p-3 bg-green-100 text-green-800 rounded-md font-semibold hover:bg-green-200 transition duration-200 ease-in-out">
+              Importar do Trello
+            </button>
+            <button disabled className="p-3 bg-purple-100 text-purple-800 rounded-md font-semibold hover:bg-purple-200 transition duration-200 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">
+              Importar do Obsidian
+            </button>
+          </div>
         </div>
 
         {/* Botão de Ação */}
@@ -172,10 +266,22 @@ const App = () => {
           </p>
         )}
 
-        {normalizedDataForAPO && <ResultsDisplay data={normalizedDataForAPO} />}
+        {normalizedDataForAPO && (
+          <>
+            <ResultsDisplay data={normalizedDataForAPO} />
+            <div className="mt-6 text-center">
+              <button
+                onClick={handleSendToApo}
+                className="px-6 py-2 font-bold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition-transform transform hover:scale-105"
+              >
+                Enviar para Processamento (APO)
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 };
 
-export default App;
+export default AgenteAci;

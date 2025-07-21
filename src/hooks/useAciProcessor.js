@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-
-// Para que este hook funcione, a biblioteca Tesseract.js deve ser carregada globalmente
-// via CDN no seu arquivo HTML (por exemplo, index.html).
-// <script src="https://unpkg.com/tesseract.js@5.0.0/dist/tesseract.min.js"></script>
+import Tesseract from 'tesseract.js';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 export const useAciProcessor = () => {
   const [inputContent, setInputContent] = useState('');
@@ -13,6 +12,11 @@ export const useAciProcessor = () => {
   const [message, setMessage] = useState('');
   const [ocrProgress, setOcrProgress] = useState(0);
 
+  // Configura o worker para o pdf.js uma única vez
+  useEffect(() => {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+  }, []);
+
   // Limpa a mensagem de status após 5 segundos
   useEffect(() => {
     if (message) {
@@ -22,71 +26,56 @@ export const useAciProcessor = () => {
   }, [message]);
 
   // Função de OCR (memoizada com useCallback)
-  const performOCR = useCallback(async (file) => { // eslint-disable-line
+  const performOCR = useCallback(async (file) => {
     setMessage('Iniciando OCR...');
     setOcrProgress(0);
 
-    if (typeof window.Tesseract === 'undefined') {
-      setMessage('Erro: Tesseract.js não foi carregado. Verifique o script CDN no HTML.');
-      console.error('Tesseract.js is not loaded.');
-      return '';
-    }
-
     // Lógica para processar PDFs
     if (file.type === 'application/pdf') {
-      const pdfjsLib = await import('https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.min.mjs');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
       setMessage('Processando PDF...');
-      const fileReader = new FileReader();
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const typedarray = new Uint8Array(arrayBuffer);
+        const pdf = await pdfjsLib.getDocument(typedarray).promise;
+        let fullText = '';
 
-      return new Promise((resolve, reject) => {
-        fileReader.onload = async function() {
-          try {
-            const typedarray = new Uint8Array(this.result);
-            const pdf = await pdfjsLib.getDocument(typedarray).promise;
-            let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          setMessage(`Processando página ${i} de ${pdf.numPages}...`);
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 2.0 }); // Aumentar a escala melhora a precisão do OCR
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
 
-            for (let i = 1; i <= pdf.numPages; i++) {
-              setMessage(`Processando página ${i} de ${pdf.numPages}...`);
-              const page = await pdf.getPage(i);
-              const viewport = page.getViewport({ scale: 2.0 }); // Aumentar a escala melhora a precisão do OCR
-              const canvas = document.createElement('canvas');
-              const context = canvas.getContext('2d');
-              canvas.height = viewport.height;
-              canvas.width = viewport.width;
+          await page.render({ canvasContext: context, viewport }).promise;
 
-              await page.render({ canvasContext: context, viewport }).promise;
-
-              const { data: { text } } = await window.Tesseract.recognize(
-                canvas,
-                'por',
-                {
-                  logger: m => {
-                    if (m.status === 'recognizing text') {
-                      const pageProgress = m.progress / pdf.numPages;
-                      const totalProgress = ((i - 1) / pdf.numPages) + pageProgress;
-                      setOcrProgress(Math.round(totalProgress * 100));
-                    }
-                  }
+          const { data: { text } } = await Tesseract.recognize(
+            canvas,
+            'por',
+            {
+              logger: m => {
+                if (m.status === 'recognizing text') {
+                  const pageProgress = m.progress / pdf.numPages;
+                  const totalProgress = ((i - 1) / pdf.numPages) + pageProgress;
+                  setOcrProgress(Math.round(totalProgress * 100));
                 }
-              );
-              fullText += text + '\n\n';
+              }
             }
-            setMessage('Processamento de PDF concluído!');
-            resolve(fullText);
-          } catch (error) {
-            console.error('Erro ao processar PDF:', error);
-            setMessage('Erro ao processar PDF. Tente novamente.');
-            reject('');
-          }
-        };
-        fileReader.readAsArrayBuffer(file);
-      });
+          );
+          fullText += text + '\n\n';
+        }
+        setMessage('Processamento de PDF concluído!');
+        return fullText;
+      } catch (error) {
+        console.error('Erro ao processar PDF:', error);
+        setMessage('Erro ao processar PDF. Tente novamente.');
+        return '';
+      }
     }
 
     // Lógica original para imagens
-    const { data: { text } } = await window.Tesseract.recognize(
+    const { data: { text } } = await Tesseract.recognize(
       file,
       'por',
       {
@@ -117,7 +106,7 @@ export const useAciProcessor = () => {
     const lines = text.trim().split('\n');
     // Procura pelo primeiro título que faça sentido, ignorando ruído.
     for (const line of lines) {
-        const trimmedLine = line.trim().replace(/^[|O]\s*/, '').trim();
+        const trimmedLine = line.trim();
         // Um bom candidato a título:
         // - não é um item de lista
         // - tem um tamanho razoável (entre 10 e 150 caracteres)
@@ -178,7 +167,7 @@ export const useAciProcessor = () => {
 
     // 1. Divide em linhas e faz uma limpeza inicial de ruídos comuns do OCR
     const lines = text.split('\n').map(line => 
-      line.trim().replace(/^[|O]\s*/, '').trim()
+      line.trim().replace(/^(?:\||O(?=\s|$))\s*/, '').trim()
     ).filter(line => {
       // Filtra linhas que são provavelmente ruído (ex: muito curtas, sem palavras reais)
       if (line.length < 10 && !/[a-zA-Z]{3,}/.test(line)) {
@@ -188,24 +177,23 @@ export const useAciProcessor = () => {
     });
 
     // 2. Reconstrói linhas que foram quebradas incorretamente pelo OCR
-    const reconstructedLines = [];
-    for (let i = 0; i < lines.length; i++) {
-        const currentLine = lines[i];
-        const nextLine = lines[i + 1];
-        // Heurística para decidir se uma linha deve ser juntada com a próxima.
-        // Uma linha é considerada "completa" se termina com pontuação forte (. ! ?)
-        // ou se a próxima linha é claramente um novo item.
-        const endsWithStrongPunctuation = /[.!?]$/.test(currentLine);
-        const nextIsListItem = nextLine && /^\s*(?:\d+\.|-|\*|—)/.test(nextLine);
-        const isLastLine = i === lines.length - 1;
+    const reconstructedLines = lines.reduce((acc, currentLine, index, arr) => {
+      if (acc.wasJoined) {
+        acc.wasJoined = false;
+        return acc;
+      }
+      const nextLine = arr[index + 1];
+      const endsWithStrongPunctuation = /[.!?]$/.test(currentLine);
+      const nextIsListItem = nextLine && /^\s*(?:\d+\.|-|\*|—)/.test(nextLine);
 
-        if (isLastLine || endsWithStrongPunctuation || nextIsListItem) {
-            reconstructedLines.push(currentLine);
-        } else {
-            // É uma linha quebrada, então junta com a próxima.
-            lines[i + 1] = currentLine + ' ' + nextLine;
-        }
-    }
+      if (nextLine && !endsWithStrongPunctuation && !nextIsListItem) {
+        acc.lines.push(currentLine + ' ' + nextLine);
+        acc.wasJoined = true; // Sinaliza para pular a próxima linha na iteração
+      } else {
+        acc.lines.push(currentLine);
+      }
+      return acc;
+    }, { lines: [], wasJoined: false }).lines;
 
     // 3. Formatação final: garante que parágrafos sejam separados por linhas duplas
     return reconstructedLines.join('\n').replace(/(\r\n|\n|\r){2,}/g, '\n\n').trim();
@@ -249,35 +237,51 @@ export const useAciProcessor = () => {
     setIsLoading(false);
   }, [selectedFile, inputContent, performOCR, normalizeData, detectRelevantContent]);
 
-  // Funções para atualizar o estado a partir dos componentes de UI
-  const handleFileChange = (event) => {
-    const file = event.target.files[0];
+  // Função para lidar com a seleção de um arquivo (seja de um input ou de outra fonte)
+  const handleFileSelect = useCallback((file) => {
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
     setSelectedFile(file);
     setInputContent('');
     setExtractedText('');
     setNormalizedDataForAPO(null);
     setMessage('');
     setOcrProgress(0);
-  };
+  }, []);
 
-  const handleInputChange = (event) => {
-    setInputContent(event.target.value);
+  // Função para lidar com a definição de conteúdo de texto (seja de um input ou de outra fonte)
+  const handleTextSelect = useCallback((text) => {
+    setInputContent(text);
     setSelectedFile(null);
     setExtractedText('');
     setNormalizedDataForAPO(null);
     setMessage('');
     setOcrProgress(0);
+  }, []);
+
+  // Funções para atualizar o estado a partir dos componentes de UI
+  const handleFileChange = (event) => {
+    handleFileSelect(event.target.files?.[0] || null);
+  };
+
+  const handleInputChange = (event) => {
+    handleTextSelect(event.target.value);
   };
 
   return {
     inputContent,
+    setInputContent,
     selectedFile,
     normalizedDataForAPO,
     isLoading,
     message,
     ocrProgress,
     handleFileChange,
+    handleTextSelect,
+    handleFileSelect,
     handleInputChange,
-    processContent,
+    processContent
   };
 };
