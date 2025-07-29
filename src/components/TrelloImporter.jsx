@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Modal from '@/components/Modal';
 import * as trelloApi from '@/services/trelloApi';
+import { processContent } from '../utils/processContent';
 
 // Helper para formatar os dados do cartão em um texto limpo
 const formatCardContent = (card) => {
@@ -73,7 +74,8 @@ const TrelloImporter = ({ isOpen, onClose, onImport }) => {
     try {
       const cardDetails = await trelloApi.getCardDetails(card.id);
       const formattedContent = formatCardContent(cardDetails);
-      onImport(formattedContent);
+      const processed = await processContent(formattedContent);
+      onImport(processed);
       handleClose();
     } catch (err) {
       setError(`Falha ao buscar detalhes do cartão. ${err.message}`);

@@ -13,8 +13,11 @@
     "docs:build": "vitepress build docs"
   },
   "dependencies": {
+    "@azure/msal-react": "^3.0.15",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
     "@react-oauth/google": "^0.12.2",
     "@tailwindcss/postcss": "^4.1.11",
+    "mammoth": "^1.8.0",
     "pdfjs-dist": "^4.4.168",
     "prop-types": "^15.8.1",
     "react": "^19.1.0",

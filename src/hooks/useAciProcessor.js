@@ -1,287 +1,186 @@
-import { useState, useEffect, useCallback } from 'react';
-import Tesseract from 'tesseract.js';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// src/hooks/useAciProcessor.js
+import { useState, useCallback } from 'react';
+import { runOCR } from '../utils/ocr';
+import { getDocxContent as getMsDocxContent } from '../services/microsoftApi';
+import { getDocumentContent as getGoogleDocContent, downloadFile as downloadGoogleDriveFile } from '../services/googleApi';
+import { processContent as processTextContent } from '../utils/processContent';
 
-export const useAciProcessor = () => {
+// Supondo que estas funções existam em outro arquivo de utilitário
+// import { normalizeData, detectRelevantContent } from '../utils/textProcessing';
+
+export const useAciProcessor = ({ googleAccessToken }) => {
+  // Estados do ACI
   const [inputContent, setInputContent] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [extractedText, setExtractedText] = useState('');
-  const [normalizedDataForAPO, setNormalizedDataForAPO] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState('Aguardando entrada para processamento.');
   const [ocrProgress, setOcrProgress] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // Configura o worker para o pdf.js uma única vez
-  useEffect(() => {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+  // Estados do APO (passados para o próximo agente)
+  const [normalizedDataForAPO, setNormalizedDataForAPO] = useState(null);
+
+  // --- Funções de extração refatoradas ---
+
+  const _handleLocalFile = useCallback(async (file) => {
+    setMessage('Arquivo local selecionado. Iniciando extração de texto...');
+    const name = file.name?.toLowerCase() || '';
+    if (name.endsWith('.docx')) {
+      setMessage('Extraindo texto do DOCX...');
+      return getMsDocxContent(file);
+    }
+    if (name.endsWith('.pdf') || name.match(/\.(jpe?g|png|bmp|gif)$/)) {
+      return runOCR(file, { setMessage, setOcrProgress });
+    }
+    // Outros tipos: tenta ler como texto
+    return file.text();
   }, []);
 
-  // Limpa a mensagem de status após 5 segundos
-  useEffect(() => {
-    if (message) {
-      const timer = setTimeout(() => setMessage(''), 5000);
-      return () => clearTimeout(timer);
+  const _handleOneDriveFile = useCallback(async (file) => {
+    setMessage('Baixando arquivo do OneDrive...');
+    setOcrProgress(0);
+    const response = await fetch(file['@microsoft.graph.downloadUrl']);
+    if (!response.ok) {
+      throw new Error(`Falha ao baixar o arquivo: ${response.statusText}`);
     }
-  }, [message]);
+    const blob = await response.blob();
 
-  // Função de OCR (memoizada com useCallback)
-  const performOCR = useCallback(async (file) => {
-    setMessage('Iniciando OCR...');
+    if (file.name.toLowerCase().endsWith('.docx')) {
+      setMessage('Extraindo texto do DOCX do OneDrive...');
+      return getMsDocxContent(blob);
+    }
+
+    // Para PDF e imagens, passa para o OCR
+    const fileObject = new File([blob], file.name, { type: file.file?.mimeType });
+    setMessage('Arquivo do OneDrive baixado. Iniciando extração de texto...');
+    return runOCR(fileObject, { setMessage, setOcrProgress });
+  }, []);
+
+  const _handleGoogleDriveFile = useCallback(async (file) => {
+    setMessage('Acessando arquivo do Google Drive...');
     setOcrProgress(0);
 
-    // Lógica para processar PDFs
-    if (file.type === 'application/pdf') {
-      setMessage('Processando PDF...');
-      try {
-        const arrayBuffer = await file.arrayBuffer();
-        const typedarray = new Uint8Array(arrayBuffer);
-        const pdf = await pdfjsLib.getDocument(typedarray).promise;
-        let fullText = '';
-
-        for (let i = 1; i <= pdf.numPages; i++) {
-          setMessage(`Processando página ${i} de ${pdf.numPages}...`);
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 2.0 }); // Aumentar a escala melhora a precisão do OCR
-          const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d');
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-
-          await page.render({ canvasContext: context, viewport }).promise;
-
-          const { data: { text } } = await Tesseract.recognize(
-            canvas,
-            'por',
-            {
-              logger: m => {
-                if (m.status === 'recognizing text') {
-                  const pageProgress = m.progress / pdf.numPages;
-                  const totalProgress = ((i - 1) / pdf.numPages) + pageProgress;
-                  setOcrProgress(Math.round(totalProgress * 100));
-                }
-              }
-            }
-          );
-          fullText += text + '\n\n';
-        }
-        setMessage('Processamento de PDF concluído!');
-        return fullText;
-      } catch (error) {
-        console.error('Erro ao processar PDF:', error);
-        setMessage('Erro ao processar PDF. Tente novamente.');
-        return '';
-      }
+    if (!googleAccessToken) {
+      throw new Error('O token de acesso do Google Drive está ausente. Por favor, faça o login.');
     }
 
-    // Lógica original para imagens
-    const { data: { text } } = await Tesseract.recognize(
-      file,
-      'por',
-      {
-        logger: m => {
-          if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100));
-        }
-      }
-    );
-    return text;
-  }, [setOcrProgress, setMessage]);
-
-  // Função de detecção de conteúdo (memoizada com useCallback)
-  const detectRelevantContent = useCallback((text) => {
-    const detected = {
-      title: '',
-      links: [],
-      emails: [],
-      types: [],
-      dates: [],
-      listItems: [],
-    };
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const emailRegex = /[\w.-]+@([\w-]+\.)+[\w-]{2,4}/g;
-    // Regex para datas como "25 de julho"
-    const dateRegex = /(\d{1,2} de \w+)/gi;
-    const listItemRegex = /^\s*(?:\d+\.|-|\*|—)\s+(.*)/gm;
-    
-    const lines = text.trim().split('\n');
-    // Procura pelo primeiro título que faça sentido, ignorando ruído.
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        // Um bom candidato a título:
-        // - não é um item de lista
-        // - tem um tamanho razoável (entre 10 e 150 caracteres)
-        // - tem uma alta proporção de caracteres alfabéticos para filtrar ruído
-        const isListItem = /^\s*(?:\d+\.|-|\*|—)/.test(trimmedLine);
-        if (isListItem || trimmedLine.length < 10 || trimmedLine.length > 150) continue;
-
-        const alphaChars = (trimmedLine.match(/[a-zA-Z]/g) || []).length;
-        const totalChars = trimmedLine.length;
-        
-        if (totalChars > 0 && (alphaChars / totalChars > 0.6)) {
-            detected.title = trimmedLine;
-            break; // Para no primeiro candidato válido.
-        }
+    // Se for um Google Doc, usa a API do Google Docs para pegar o texto
+    if (file.mimeType === 'application/vnd.google-apps.document') {
+      setMessage('Extraindo texto do Google Doc...');
+      return getGoogleDocContent(googleAccessToken, file.id);
     }
 
-    detected.links = [...new Set(text.match(urlRegex) || [])];
-    detected.emails = [...new Set(text.match(emailRegex) || [])];
-    detected.dates = [...new Set(text.match(dateRegex) || [])];
+    // Para outros tipos de arquivo (PDF, imagens, docx), faz o download
+    const blob = await downloadGoogleDriveFile(googleAccessToken, file.id);
 
-    const lowerText = text.toLowerCase();
-    const typeKeywords = {
-      'Material de Estudo': ['aula', 'sistema definitivo', 'investidores', 'mercado financeiro', 'dividendos'],
-      'Artigo': ['artigo', 'reportagem', 'notícia'],
-      'Documento': [
-        'documento', 'relatório', 'ata', 
-        // Adicionando palavras-chave mais específicas para o exemplo
-        'fatura', 'boleto', 'pagamento', 'vencimento'
-      ],
-      'Projeto/Plano': ['projeto', 'plano', 'briefing'],
-      'Ideia/Conceito': ['ideia', 'conceito', 'brainstorm'],
-    };
-
-    for (const type in typeKeywords) {
-      if (typeKeywords[type].some(keyword => lowerText.includes(keyword.toLowerCase()))) {
-        detected.types.push(type);
-      }
+    // Se for um .docx, extrai o texto diretamente
+    if (file.name.toLowerCase().endsWith('.docx')) {
+      setMessage('Extraindo texto do DOCX do Google Drive...');
+      return getMsDocxContent(blob);
     }
 
-    // Regra para preferir 'Material de Estudo' sobre 'Artigo' se ambos forem detectados
-    if (detected.types.includes('Material de Estudo') && detected.types.includes('Artigo')) {
-        detected.types = detected.types.filter(t => t !== 'Artigo');
+    // Para PDF e imagens, passa para o OCR
+    const fileObject = new File([blob], file.name, { type: file.mimeType });
+    setMessage('Arquivo do Google Drive baixado. Iniciando extração de texto...');
+    return runOCR(fileObject, { setMessage, setOcrProgress });
+  }, [googleAccessToken]);
+
+  // Função interna que decide como obter o conteúdo e rodar o OCR
+  const extractTextFromFile = useCallback(async (file) => {
+    if (!file) return '';
+
+    try {
+      // Verifica se é um arquivo da nuvem (OneDrive)
+      if (file['@microsoft.graph.downloadUrl']) {
+        return await _handleOneDriveFile(file);
+      }
+      // Verifica se é um arquivo do Google Drive
+      if (file.kind === 'drive#file') {
+        return await _handleGoogleDriveFile(file);
+      }
+      // Trata como um arquivo local
+      if (file instanceof File) {
+        return await _handleLocalFile(file);
+      }
+    } catch (error) {
+      console.error('Erro ao extrair texto do arquivo:', error);
+      setMessage(`Erro: ${error.message}`);
+      // Lançar o erro novamente para que seja capturado pelo `processContent`
+      throw error;
     }
 
-    detected.types = [...new Set(detected.types)];
+    throw new Error('Tipo de arquivo não suportado para processamento.');
+  }, [_handleLocalFile, _handleOneDriveFile, _handleGoogleDriveFile]);
 
-    let match;
-    while ((match = listItemRegex.exec(text)) !== null) {
-      detected.listItems.push(match[1].trim());
-    }
-    
-    return detected;
-  }, []);
-
-  // Função de normalização (memoizada com useCallback)
-  const normalizeData = useCallback((text) => {
-    if (!text) return '';
-
-    // 1. Divide em linhas e faz uma limpeza inicial de ruídos comuns do OCR
-    const lines = text.split('\n').map(line => 
-      line.trim().replace(/^(?:\||O(?=\s|$))\s*/, '').trim()
-    ).filter(line => {
-      // Filtra linhas que são provavelmente ruído (ex: muito curtas, sem palavras reais)
-      if (line.length < 10 && !/[a-zA-Z]{3,}/.test(line)) {
-        return false;
-      }
-      return Boolean(line);
-    });
-
-    // 2. Reconstrói linhas que foram quebradas incorretamente pelo OCR
-    const reconstructedLines = lines.reduce((acc, currentLine, index, arr) => {
-      if (acc.wasJoined) {
-        acc.wasJoined = false;
-        return acc;
-      }
-      const nextLine = arr[index + 1];
-      const endsWithStrongPunctuation = /[.!?]$/.test(currentLine);
-      const nextIsListItem = nextLine && /^\s*(?:\d+\.|-|\*|—)/.test(nextLine);
-
-      if (nextLine && !endsWithStrongPunctuation && !nextIsListItem) {
-        acc.lines.push(currentLine + ' ' + nextLine);
-        acc.wasJoined = true; // Sinaliza para pular a próxima linha na iteração
-      } else {
-        acc.lines.push(currentLine);
-      }
-      return acc;
-    }, { lines: [], wasJoined: false }).lines;
-
-    // 3. Formatação final: garante que parágrafos sejam separados por linhas duplas
-    return reconstructedLines.join('\n').replace(/(\r\n|\n|\r){2,}/g, '\n\n').trim();
-  }, []);
-
-  // Função principal de processamento (memoizada com useCallback)
+  // Função principal que orquestra o processamento
   const processContent = useCallback(async () => {
-    setIsLoading(true);
-    setExtractedText('');
-    setNormalizedDataForAPO(null);
-    setMessage('');
-    setOcrProgress(0);
-
+    setIsProcessing(true);
     let rawContent = '';
-    if (selectedFile) {
-      rawContent = await performOCR(selectedFile);
-      setExtractedText(rawContent);
-    } else if (inputContent.trim()) {
-      rawContent = inputContent;
-      setExtractedText(rawContent);
-    } else {
-      setMessage('Por favor, insira algum texto ou selecione um arquivo para processar.');
-      setIsLoading(false);
-      return;
+    setNormalizedDataForAPO(null); // Limpa resultados anteriores
+
+    try {
+      if (selectedFile) {
+        setMessage('Arquivo selecionado. Iniciando extração...');
+        rawContent = await extractTextFromFile(selectedFile);
+        setExtractedText(rawContent);
+      } else if (inputContent) {
+        setMessage('Texto inserido. Processando...');
+        rawContent = inputContent;
+        setExtractedText(rawContent);
+      } else {
+        setMessage('Nenhuma entrada fornecida.');
+        setIsProcessing(false);
+        return;
+      }
+
+      if (rawContent) {
+        setMessage('Analisando conteúdo...');
+        // **MELHORIA**: Ativando o pipeline de processamento de texto.
+        const processedData = await processTextContent(rawContent);
+        setNormalizedDataForAPO(processedData);
+        setMessage('Processamento concluído.');
+      } else {
+        setMessage('Não foi possível extrair conteúdo.');
+      }
+    } catch (error) {
+      console.error("Erro ao processar conteúdo:", error);
+      setMessage(`Erro: ${error.message}`);
+    } finally {
+      setIsProcessing(false);
     }
+  }, [selectedFile, inputContent, extractTextFromFile, processTextContent]);
 
-    const normalizedText = normalizeData(rawContent);
-    const detectedInfo = detectRelevantContent(normalizedText);
-
-    const dataForAPO = {
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      source: selectedFile ? selectedFile.name : 'Input Manual',
-      originalContent: rawContent,
-      normalizedText,
-      detectedMetadata: detectedInfo,
-    };
-
-    setNormalizedDataForAPO(dataForAPO);
-    setMessage('Processamento do ACI concluído! Dados prontos para o APO.');
-    setIsLoading(false);
-  }, [selectedFile, inputContent, performOCR, normalizeData, detectRelevantContent]);
-
-  // Função para lidar com a seleção de um arquivo (seja de um input ou de outra fonte)
-  const handleFileSelect = useCallback((file) => {
-    if (!file) {
-      setSelectedFile(null);
-      return;
-    }
+  const handleFileSelect = (file) => {
     setSelectedFile(file);
-    setInputContent('');
-    setExtractedText('');
+    setInputContent(''); // Limpa o texto se um arquivo for selecionado
     setNormalizedDataForAPO(null);
-    setMessage('');
-    setOcrProgress(0);
-  }, []);
-
-  // Função para lidar com a definição de conteúdo de texto (seja de um input ou de outra fonte)
-  const handleTextSelect = useCallback((text) => {
-    setInputContent(text);
-    setSelectedFile(null);
-    setExtractedText('');
-    setNormalizedDataForAPO(null);
-    setMessage('');
-    setOcrProgress(0);
-  }, []);
-
-  // Funções para atualizar o estado a partir dos componentes de UI
-  const handleFileChange = (event) => {
-    handleFileSelect(event.target.files?.[0] || null);
+    setMessage(file ? `Arquivo "${file.name}" selecionado.` : 'Aguardando entrada para processamento.');
   };
 
-  const handleInputChange = (event) => {
-    handleTextSelect(event.target.value);
+  const handleTextChange = (text) => {
+    setInputContent(text);
+    setSelectedFile(null); // Limpa o arquivo se texto for inserido
+    setNormalizedDataForAPO(null);
+    if (text) {
+      setMessage('Pronto para processar o texto.');
+    } else {
+      setMessage('Aguardando entrada para processamento.');
+    }
   };
 
   return {
     inputContent,
-    setInputContent,
     selectedFile,
-    normalizedDataForAPO,
-    isLoading,
+    extractedText,
     message,
     ocrProgress,
-    handleFileChange,
-    handleTextSelect,
+    isProcessing,
+    normalizedDataForAPO,
     handleFileSelect,
-    handleInputChange,
-    processContent
+    handleTextChange,
+    processContent, // Adicione os setters abaixo
+    setNormalizedDataForAPO,
+    setMessage,
+    setOcrProgress,
   };
 };

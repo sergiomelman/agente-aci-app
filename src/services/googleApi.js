@@ -12,15 +12,22 @@ const googleFetch = async (url, accessToken) => {
   return response.json();
 };
 
-// Lista os arquivos do Google Drive do usuário, filtrando por Google Docs
+// Lista os arquivos do Google Drive do usuário, filtrando por tipos mais amplos
 export const listFiles = async (accessToken, pageToken = null) => {
   const url = new URL('https://www.googleapis.com/drive/v3/files');
-  // Procura por Google Docs, PDFs e todos os tipos de imagem
-  const q = "mimeType='application/vnd.google-apps.document' or mimeType='application/pdf' or mimeType contains 'image/'";
+  // Inclui Google Docs, PDF, imagens, docx, txt e markdown
+  const q = [
+    "mimeType='application/vnd.google-apps.document'",
+    "mimeType='application/pdf'",
+    "mimeType contains 'image/'",
+    "mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'", // .docx
+    "mimeType='text/plain'", // .txt
+    "mimeType='text/markdown'" // .md
+  ].join(' or ');
   url.searchParams.append('q', q);
   url.searchParams.append('fields', 'files(id, name, mimeType),nextPageToken');
   url.searchParams.append('orderBy', 'modifiedTime desc');
-  url.searchParams.append('pageSize', '100'); // Aumenta o limite de resultados por página
+  url.searchParams.append('pageSize', '100');
 
   if (pageToken) {
     url.searchParams.append('pageToken', pageToken);
