@@ -2,48 +2,64 @@ import React, { useState } from 'react';
 import { processContent } from '../utils/processContent';
 
 // Esqueleto funcional para importação de notas do Obsidian (Markdown local)
-// Integração real com o sistema de arquivos pode ser feita via backend ou API customizada
-
-const mockObsidianNotes = [
-  {
-    id: 'obsidian-1',
-    name: 'Resumo de Aula.md',
-    content: `Resumo de Aula de História\nAula sobre Revolução Francesa\n- Contexto\n- Causas\n- Consequências`
-  },
-  {
-    id: 'obsidian-2',
-    name: 'Artigo sobre IA.md',
-    content: `Artigo: Inteligência Artificial\nA IA está transformando o mundo...`
-  }
-];
 
 export default function ObsidianImporter({ onImport }) {
   const [imported, setImported] = useState([]);
   const [loading, setLoading] = useState(false);
 
   const handleImport = async () => {
+    if (!window.showDirectoryPicker) {
+      alert('Seu navegador não suporta a API de Acesso ao Sistema de Arquivos. Tente usar Chrome, Edge ou Opera.');
+      return;
+    }
+
     setLoading(true);
-    // Simula processamento de múltiplas notas Obsidian
-    const processed = await Promise.all(
-      mockObsidianNotes.map(async (note) => {
-        const result = await processContent(note.content);
-        return {
-          id: note.id,
-          name: note.name,
-          ...result
-        };
-      })
-    );
-    setImported(processed);
-    if (onImport) onImport(processed);
-    setLoading(false);
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      const notes = [];
+
+      async function getFilesRecursively(dir) {
+        for await (const entry of dir.values()) {
+          if (entry.kind === 'file' && entry.name.endsWith('.md')) {
+            const file = await entry.getFile();
+            const content = await file.text();
+            notes.push({
+              id: `obsidian-${file.name}-${file.lastModified}`,
+              name: file.name,
+              content,
+            });
+          } else if (entry.kind === 'directory') {
+            await getFilesRecursively(entry);
+          }
+        }
+      }
+
+      await getFilesRecursively(dirHandle);
+
+      const processed = await Promise.all(
+        notes.map(async (note) => {
+          const result = await processContent(note.content);
+          return { id: note.id, name: note.name, ...result };
+        })
+      );
+
+      setImported(processed);
+      if (onImport) onImport(processed);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Erro ao importar notas do Obsidian:', err);
+        alert('Ocorreu um erro ao ler o diretório.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="border p-4 rounded mb-4">
       <h2 className="font-bold mb-2">Importar do Obsidian (Markdown)</h2>
       <button onClick={handleImport} disabled={loading} className="bg-purple-600 text-white px-4 py-2 rounded">
-        {loading ? 'Importando...' : 'Importar Notas Mock'}
+        {loading ? 'Importando...' : 'Selecionar Pasta do Obsidian'}
       </button>
       <ul className="mt-4">
         {imported.map((item) => (

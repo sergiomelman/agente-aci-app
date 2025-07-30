@@ -1,43 +1,66 @@
 // src/utils/processContent.js
 // Pipeline central para normalização, metadados, título, tipo de documento, etc.
-// Adapte as funções normalizeData e detectRelevantContent conforme sua implementação.
 
-// Exemplo de funções utilitárias (substitua pelos seus algoritmos reais)
-
-// Normalização mais robusta: remove espaços duplicados, normaliza quebras de linha, remove caracteres invisíveis
 function normalizeData(rawText) {
   if (!rawText) return '';
-  let text = rawText.replace(/[\u200B-\u200D\uFEFF]/g, ''); // remove chars invisíveis
-  text = text.replace(/\r\n|\r/g, '\n'); // normaliza quebras de linha
-  text = text.replace(/\n{2,}/g, '\n\n'); // parágrafos
-  text = text.replace(/[ \t]+/g, ' '); // espaços duplicados
-  return text.trim();
+
+  // 1. Remove caracteres invisíveis e normaliza quebras de linha
+  let text = rawText.replace(/[\u200B-\u200D\uFEFF]/g, '');
+  text = text.replace(/\r\n|\r/g, '\n');
+
+  const lines = text.split('\n');
+  const reconstructedLines = [];
+  let currentParagraph = '';
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (trimmedLine === '') {
+      if (currentParagraph) {
+        reconstructedLines.push(currentParagraph);
+        currentParagraph = '';
+      }
+      reconstructedLines.push(''); // Mantém o parágrafo
+    } else {
+      // Une a linha se não for um item de lista e a linha anterior não terminar com pontuação.
+      const endsWithPunctuation = /[.?!:;]$/.test(currentParagraph);
+      const isListItem = /^\s*([-*•]|\d+\.)\s/.test(trimmedLine);
+
+      if (currentParagraph && !endsWithPunctuation && !isListItem) {
+        currentParagraph += ' ' + trimmedLine;
+      } else {
+        if (currentParagraph) {
+          reconstructedLines.push(currentParagraph);
+        }
+        currentParagraph = trimmedLine;
+      }
+    }
+  }
+
+  if (currentParagraph) {
+    reconstructedLines.push(currentParagraph);
+  }
+
+  // Junta palavras separadas por hífen no final da linha e limpa espaços extras.
+  return reconstructedLines.join('\n').replace(/-\n/g, '').replace(/\n\n\n+/g, '\n\n').trim();
 }
 
-
-// Extração de metadados: título, tipo, data, tags, sumarização simples
 function detectRelevantContent(normalizedText) {
   const lines = normalizedText.split('\n').filter(Boolean);
-  
+
   // **MELHORIA NA DETECÇÃO DE TÍTULO**:
-  // Procura por um título mais robusto, ignorando linhas muito curtas ou muito longas.
-  // Dá preferência para as primeiras 5 linhas do documento.
   let suggestedTitle = '';
   for (const line of lines.slice(0, 5)) {
     const trimmedLine = line.trim();
     if (trimmedLine.length > 5 && trimmedLine.length < 100) {
-      // Remove marcadores comuns como '# '
       suggestedTitle = trimmedLine.replace(/^#+\s*/, '').trim();
       break;
     }
   }
-  // Fallback para a primeira linha se nada for encontrado
   if (!suggestedTitle) {
     suggestedTitle = lines[0]?.trim() || 'Sem Título';
   }
 
   // **MELHORIA NA CLASSIFICAÇÃO DE CONTEÚDO**:
-  // Usando um sistema de pontuação simples para mais precisão.
   let contentType = 'Desconhecido';
   if (/estudo|resumo|aula/i.test(normalizedText)) contentType = 'Material de Estudo';
   else if (/artigo|not[ií]cia/i.test(normalizedText)) contentType = 'Artigo';
@@ -45,7 +68,6 @@ function detectRelevantContent(normalizedText) {
   else if (/tarefa|to.?do|task/i.test(normalizedText)) contentType = 'Tarefa';
   else if (/di[aá]rio|journal/i.test(normalizedText)) contentType = 'Diário';
   else if (/nota|note/i.test(normalizedText)) contentType = 'Nota';
-  // Aprimoramento: se tiver checklist, provavelmente é uma tarefa ou reunião.
   if (/\[\s*\]|\[x\]/i.test(normalizedText) && (contentType === 'Nota' || contentType === 'Desconhecido')) {
     contentType = 'Tarefa';
   }
@@ -56,14 +78,22 @@ function detectRelevantContent(normalizedText) {
 
   // Tags (procura por #tag ou palavras entre colchetes)
   const tagMatches = normalizedText.match(/#(\w+)|\[(\w+)\]/g);
-  const tags = tagMatches ? tagMatches.map(t => t.replace(/[#\[\]]/g, '')) : [];
+  const tags = tagMatches ? [...new Set(tagMatches.map(t => t.replace(/[#\[\]]/g, '')))] : [];
 
-  // Sumarização simples: primeiros 2 parágrafos
+  // **NOVO**: Extração de links, emails e itens de lista
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g;
+  const listItemRegex = /^\s*([-*•]|\d+\.)\s+(.*)/;
+
+  const links = [...new Set(normalizedText.match(urlRegex) || [])];
+  const emails = [...new Set(normalizedText.match(emailRegex) || [])];
+  const listItems = lines.map(line => line.match(listItemRegex)).filter(Boolean).map(match => match[2]);
+
   // **MELHORIA NA SUMARIZAÇÃO**: Usando sumarização extrativa simples.
   const sentences = normalizedText.replace(/([.?!])\s*(?=[A-Z])/g, '$1|').split('|');
-  const stopWords = new Set(['e', 'o', 'a', 'de', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'mas', 'ou', 'se', 'que', 'como', 'eu', 'você', 'ele', 'ela']);
+  const stopWords = new Set(['e', 'o', 'a', 'de', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'mas', 'ou', 'se', 'que', 'como', 'eu', 'você', 'ele', 'ela', 'nós', 'eles', 'elas', 'este', 'esta', 'isto', 'aquele', 'aquela', 'aquilo']);
   const wordFrequencies = {};
-  
+
   normalizedText.toLowerCase().split(/\s+/).forEach(word => {
     const cleanWord = word.replace(/[.,!?;:()]/g, '');
     if (!stopWords.has(cleanWord)) {
@@ -88,11 +118,12 @@ function detectRelevantContent(normalizedText) {
     contentType,
     date,
     tags,
+    links,
+    emails,
+    listItems,
     summary,
-    // outros metadados...
   };
 }
-
 
 // Pipeline central: normaliza, extrai metadados e sumariza
 export async function processContent(rawText) {

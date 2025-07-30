@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAciProcessor } from '../hooks/useAciProcessor';
+import { useGoogleLogin } from '@react-oauth/google';
 import { useApo } from '../hooks/useApo';
 import OneDrivePicker from '../components/OneDrivePicker';
 import ObsidianImporter from '../components/ObsidianImporter';
 import GoogleDriveImporter from '../components/GoogleDriveImporter';
-import GoogleDriveAuthImporter from '../components/GoogleDriveAuthImporter';
+import { MetadataItem } from '../components/ResultsDisplay';
 import TrelloImporter from '../components/TrelloImporter';
 import NotionImporter from '../components/NotionImporter';
 import OneNoteImporter from '../components/OneNoteImporter';
@@ -28,25 +29,29 @@ export default function AgenteAci() {
 
   const { apoResult, setApoInput } = useApo();
 
-  // Este efeito conecta os dois agentes:
-  // Quando o ACI produz um resultado, ele é enviado como entrada para o APO.
-  useEffect(() => {
+  const handleSendToApo = () => {
     if (normalizedDataForAPO) {
       setApoInput(normalizedDataForAPO);
+      setMessage("Resultados enviados para o Agente APO para organização.");
     }
-  }, [normalizedDataForAPO, setApoInput]);
+  };
 
   const [showOneDrive, setShowOneDrive] = useState(false);
   const [showObsidian, setShowObsidian] = useState(false);
   // Estados para modais dos importadores
   const [showGoogleDrive, setShowGoogleDrive] = useState(false);
+  const [googleAccessToken, setGoogleAccessToken] = useState(null);
   const [showTrello, setShowTrello] = useState(false);
   const [showNotion, setShowNotion] = useState(false);
   const [showOneNote, setShowOneNote] = useState(false);
 
   // Handlers para cada importador
   const handleObsidianImport = (items) => {
-    if (items && items.length > 0) handleTextChange(items[0].normalizedText);
+    if (items && items.length > 0) {
+      handleTextChange(items[0].normalizedText);
+    } else {
+      setMessage("Nenhum item foi selecionado do Obsidian.");
+    }
     setShowObsidian(false);
   };
   const handleGoogleDriveImport = (processed) => {
@@ -64,6 +69,25 @@ export default function AgenteAci() {
   const handleOneNoteImport = (processed) => {
     handleTextChange(processed.normalizedText);
     setShowOneNote(false);
+  };
+
+  // Lógica de autenticação e importação do Google Drive
+  const handleGoogleLoginSuccess = (tokenResponse) => {
+    setGoogleAccessToken(tokenResponse.access_token);
+    setShowGoogleDrive(true); // Abre o seletor de arquivos após o login
+  };
+
+  const googleLogin = useGoogleLogin({
+    onSuccess: handleGoogleLoginSuccess,
+    onError: () => {
+      setMessage('Falha na autenticação com o Google.');
+    },
+    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    flow: 'implicit',
+  });
+
+  const handleGoogleDriveClick = () => {
+    googleLogin(); // Inicia o fluxo de login, que então abre o importador
   };
 
   const handleFileDrop = (e) => {
@@ -113,16 +137,17 @@ export default function AgenteAci() {
         <div className="text-center">Ou importe de outras fontes</div>
         <div className="flex justify-center gap-2">
           <button onClick={() => setShowTrello(true)} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800">Trello</button>
-          <div className="flex flex-col items-center"><GoogleDriveAuthImporter onImport={handleGoogleDriveImport} /></div>
+          <button onClick={handleGoogleDriveClick} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">GoogleDrive</button>
           <button onClick={() => setShowObsidian(!showObsidian)} className="px-4 py-2 bg-purple-700 text-white rounded hover:bg-purple-800">Obsidian</button>
         {showObsidian && <ObsidianImporter onImport={handleObsidianImport} />}
           <button onClick={() => setShowOneDrive(!showOneDrive)} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">OneDrive</button>
           <button onClick={() => setShowOneNote(true)} className="px-4 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800">OneNote</button>
           <button onClick={() => setShowNotion(true)} className="px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Notion</button>
-        {showGoogleDrive && (
+        {showGoogleDrive && googleAccessToken && (
           <GoogleDriveImporter
             isOpen={showGoogleDrive}
             onClose={() => setShowGoogleDrive(false)}
+            accessToken={googleAccessToken}
             handleTextSelect={handleGoogleDriveImport}
           />
         )}
@@ -160,7 +185,26 @@ export default function AgenteAci() {
           <div className="p-2 mt-2 border rounded-md bg-white dark:bg-gray-700 min-h-[50px]">
             <p className="text-sm text-gray-600 dark:text-gray-300">{message}</p>
             {isProcessing && ocrProgress > 0 && <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2"><div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${ocrProgress}%` }}></div></div>}
-            {extractedText && <pre className="whitespace-pre-wrap text-sm mt-2">{extractedText}</pre>}
+            
+            {normalizedDataForAPO && normalizedDataForAPO.metadata && (
+              <div className="my-4 p-3 bg-gray-100 dark:bg-gray-600 rounded-md shadow-sm">
+                <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200 mb-2 border-b pb-1">Metadados Sugeridos</h4>
+                <MetadataItem label="Título" value={normalizedDataForAPO.metadata.suggestedTitle} />
+                <MetadataItem label="Tipo de Conteúdo" value={normalizedDataForAPO.metadata.contentType} />
+              </div>
+            )}
+
+            {extractedText && (
+              <div className="mt-2">
+                <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200 mb-2">Texto Extraído</h4>
+                <pre className="whitespace-pre-wrap text-sm">{extractedText}</pre>
+              </div>
+            )}
+            {normalizedDataForAPO && (
+              <button onClick={handleSendToApo} className="w-full p-2 mt-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
+                Enviar para APO
+              </button>
+            )}
           </div>
         </div>
       </div>

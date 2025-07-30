@@ -1,3 +1,4 @@
+
 # Agente ACI - Projeto Segundo Cérebro
 
 Este projeto é a implementação de um agente de conversação (ACI - Agente de Conversação Inteligente) construído como parte de um sistema de "Segundo Cérebro". O objetivo é criar uma interface interativa para gerenciar e consultar informações.

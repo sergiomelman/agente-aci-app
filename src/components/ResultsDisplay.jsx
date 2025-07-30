@@ -1,6 +1,6 @@
 import React from 'react';
 
-const MetadataItem = ({ label, value }) => {
+export const MetadataItem = ({ label, value }) => {
   if (!value || (Array.isArray(value) && value.length === 0)) {
     return null;
   }
@@ -66,4 +66,3 @@ const ResultsDisplay = ({ results, isLoading, error, onSendToApo }) => {
 };
 
 export default ResultsDisplay;
-
