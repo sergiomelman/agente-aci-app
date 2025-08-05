@@ -1,136 +1,155 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useMsal, useIsAuthenticated } from "@azure/msal-react";
+import { InteractionStatus } from "@azure/msal-browser";
+import { loginRequest, graphConfig } from "../authConfig";
 import PropTypes from 'prop-types';
-import { useMsal, useIsAuthenticated } from '@azure/msal-react';
-import { InteractionStatus } from '@azure/msal-browser';
-import { listAllFilesRecursive, downloadFile, getDocxContent } from '../services/microsoftApi';
-import { processContent } from '../utils/processContent';
-import { runOCR } from '../utils/ocr';
 
-export default function OneDrivePicker({ onFileSelect, setMessage, setOcrProgress }) {
-  const { instance, inProgress, accounts } = useMsal();
-  const isAuthenticated = useIsAuthenticated();
-  const [files, setFiles] = useState([]);
-  const [search, setSearch] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+const OneDrivePicker = ({ onFileSelect, setMessage, setOcrProgress }) => {
+    const { instance, inProgress, accounts } = useMsal();
+    const isAuthenticated = useIsAuthenticated();
+    const [files, setFiles] = useState([]);
+    const [nextLink, setNextLink] = useState(null);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(false);
 
-  const login = () => {
-    instance.loginRedirect({ scopes: ['User.Read', 'Files.Read.All'] });
-  };
+    const fetchFiles = useCallback(async (url) => {
+        setLoading(true);
+        setError(null);
+        if (inProgress !== InteractionStatus.None || !accounts.length) {
+            setLoading(false);
+            return;
+        }
 
-  useEffect(() => {
-    // A condição `files.length === 0` previne a busca de arquivos se eles já foram carregados.
-    if (isAuthenticated && inProgress === InteractionStatus.None && files.length === 0) {
-      setIsLoading(true);
-      setMessage('Buscando arquivos no OneDrive (todas as pastas)...');
-      listAllFilesRecursive(instance, accounts[0])
-        .then(allFiles => {
-          setFiles(allFiles);
-        })
-        .catch(error => {
-          console.error('Erro ao listar arquivos do OneDrive:', error);
-          setMessage('Erro ao buscar arquivos do OneDrive.');
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    }
-  }, [isAuthenticated, inProgress, instance, accounts, setMessage]);
+        try {
+            const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+            const response = await fetch(url, {
+                headers: { Authorization: `Bearer ${tokenResponse.accessToken}` }
+            });
+            const data = await response.json();
 
-  const handleFileClick = async (file) => {
-    if (!file.file) {
-      setMessage(`O item '${file.name}' não é um arquivo suportado.`);
-      return;
-    }
+            if (!response.ok) {
+                throw new Error(data.error?.message || 'Falha ao buscar arquivos.');
+            }
 
+            // Se for a primeira página, substitui os arquivos. Se for "carregar mais", anexa.
+            setFiles(prevFiles => url === graphConfig.onedriveRootChildrenEndpoint ? data.value : [...prevFiles, ...data.value]);
+            setNextLink(data['@odata.nextLink'] || null);
+        } catch (e) {
+            setError(`Erro ao buscar arquivos: ${e.message}`);
+            if (e.name === "InteractionRequiredAuthError" || e.name === "BrowserAuthError") {
+                instance.loginPopup(loginRequest);
+            }
+        } finally {
+            setLoading(false);
+        }
+    }, [instance, inProgress, accounts]);
 
-    setIsLoading(true);
-    setMessage(`Baixando e processando '${file.name}'...`);
-    setOcrProgress(0); // Sempre reseta o progresso
+    useEffect(() => {
+        if (isAuthenticated) {
+            fetchFiles(graphConfig.onedriveRootChildrenEndpoint);
+        }
+    }, [isAuthenticated, fetchFiles]);
 
-    try {
-      const blob = await downloadFile(instance, accounts[0], file.id);
-      setOcrProgress(50);
-      let content = '';
+    const handleLogin = () => {
+        instance.loginPopup(loginRequest).catch(e => setError(e.message));
+    };
 
+    const handleLoadMore = () => {
+        if (nextLink) {
+            fetchFiles(nextLink);
+        }
+    };
 
-      if (file.name.toLowerCase().endsWith('.docx')) {
-        // DOCX nunca passa pelo OCR
-        content = await getDocxContent(blob);
-        setOcrProgress(80);
-      } else if (file.name.toLowerCase().endsWith('.pdf')) {
-        const ocrFile = new File([blob], file.name, { type: blob.type });
-        content = await runOCR(ocrFile, { setMessage, setOcrProgress });
-      } else if (file.name.toLowerCase().match(/\.(jpe?g|png|bmp|gif)$/)) {
-        // Imagens suportadas pelo OCR
-        const ocrFile = new File([blob], file.name, { type: blob.type });
-        content = await runOCR(ocrFile, { setMessage, setOcrProgress });
-      } else {
-        // Outros tipos: tenta ler como texto
-        content = await blob.text();
-        setOcrProgress(80);
-      }
+    // Função para chamar nosso novo backend
+    const saveToSecondBrain = async (fileContent, fileName) => {
+        setMessage("Salvando no Segundo Cérebro...");
+        setOcrProgress(0); // Reset progress
+        try {
+            const response = await fetch('http://localhost:3001/api/notes', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    normalizedText: fileContent,
+                    source: 'OneDrive',
+                    title: fileName,
+                }),
+            });
 
-      setOcrProgress(90);
-      const processed = await processContent(content);
-      onFileSelect(processed);
-    } catch (error) {
-      console.error('Erro ao baixar ou processar o arquivo:', error);
-      setMessage(`Erro ao processar o arquivo '${file.name}'.`);
-      setOcrProgress(0); // Garante reset do progresso em erro
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => setOcrProgress(100), 200); // Finaliza barra após sucesso
-    }
-  };
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.message || 'Falha ao salvar a nota.');
 
-  if (!isAuthenticated) {
+            setMessage(`Nota "${fileName}" salva com sucesso!`);
+            setOcrProgress(100);
+
+        } catch (e) {
+            setError(`Erro ao salvar: ${e.message}`);
+            setMessage("Falha ao salvar a nota no Segundo Cérebro.");
+            setOcrProgress(0);
+        }
+    };
+
+    const handleFileClick = async (file) => {
+        const downloadUrl = file['@microsoft.graph.downloadUrl'];
+        if (!downloadUrl) {
+            setError("Este arquivo não pode ser baixado (pode ser uma pasta).");
+            return;
+        }
+        // Em vez de chamar onFileSelect, agora chamamos a função que salva no backend.
+        // NOTA: A chamada direta para downloadUrl pode falhar por CORS. O ideal é que o backend faça o download.
+        // Para este exemplo, vamos assumir que a chamada funciona ou que um proxy é usado.
+        setMessage(`Processando ${file.name}...`);
+        const response = await fetch(downloadUrl);
+        const fileText = await response.text(); // Assumindo que é um arquivo de texto
+        await saveToSecondBrain(fileText, file.name);
+    };
+
     return (
-      <div className="p-4 border-t">
-        <p className="mb-2">Você precisa entrar com sua conta Microsoft para ver os arquivos do OneDrive.</p>
-        <button onClick={login} className="px-4 py-2 bg-blue-500 text-white rounded">
-          Entrar com a Microsoft
-        </button>
-      </div>
+        <div className="p-4 border rounded-lg mt-4 bg-gray-50 dark:bg-gray-700">
+            <h3 className="font-bold mb-2">Seus arquivos no OneDrive</h3>
+            {error && <div className="text-red-500 p-2 bg-red-100 rounded mb-4">{error}</div>}
+
+            {!isAuthenticated && !loading && (
+                <div className="text-center">
+                    <p className="mb-4">Faça login para ver seus arquivos.</p>
+                    <button onClick={handleLogin} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                        Entrar com a Microsoft
+                    </button>
+                </div>
+            )}
+
+            {loading && files.length === 0 && <p>Carregando arquivos...</p>}
+
+            {files.length > 0 && (
+                <ul className="max-h-60 overflow-y-auto">
+                    {files.map(file => (
+                        <li key={file.id} onClick={() => handleFileClick(file)}
+                            className="p-2 border-b cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600">
+                            {file.name}
+                        </li>
+                    ))}
+                </ul>
+            )}
+
+            {loading && files.length > 0 && <p className="text-center mt-2">Carregando mais...</p>}
+
+            {nextLink && !loading && (
+                <button
+                    onClick={handleLoadMore}
+                    className="w-full mt-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                    Carregar Mais
+                </button>
+            )}
+        </div>
     );
-  }
-
-  if (isLoading) {
-    return <div className="p-4 text-center">Carregando...</div>;
-  }
-
-  // Filtro de busca
-  const filteredFiles = files.filter(file =>
-    file.name.toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <div className="p-4 border-t max-h-60 overflow-y-auto">
-      <h3 className="font-bold mb-2">Seus Arquivos do OneDrive</h3>
-      <input
-        type="text"
-        className="mb-2 p-1 border rounded w-full"
-        placeholder="Buscar arquivo..."
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
-      <ul className="list-disc pl-5">
-        {filteredFiles.length > 0 ? (
-          filteredFiles.map(file => (
-            <li key={file.id} onClick={() => handleFileClick(file)} className="cursor-pointer hover:underline">
-              {file.parentReference && file.parentReference.path
-                ? `${file.parentReference.path.replace('/drive/root:', '')}/` : ''}{file.name}
-            </li>
-          ))
-        ) : (
-          <li>Nenhum arquivo encontrado.</li>
-        )}
-      </ul>
-    </div>
-  );
-}
+};
 
 OneDrivePicker.propTypes = {
-  onFileSelect: PropTypes.func.isRequired,
-  setMessage: PropTypes.func.isRequired,
-  setOcrProgress: PropTypes.func.isRequired,
+    onFileSelect: PropTypes.func.isRequired,
+    setMessage: PropTypes.func.isRequired,
+    setOcrProgress: PropTypes.func.isRequired,
 };
+
+export default OneDrivePicker;

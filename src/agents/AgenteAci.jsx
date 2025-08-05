@@ -8,8 +8,7 @@ import GoogleDriveImporter from '../components/GoogleDriveImporter';
 import { MetadataItem } from '../components/ResultsDisplay';
 import TrelloImporter from '../components/TrelloImporter';
 import NotionImporter from '../components/NotionImporter';
-import OneNoteImporter from '../components/OneNoteImporter';
-import PropTypes from 'prop-types';
+import OneNoteImporter from '../components/OneNoteImporter'; // PropTypes import removed as it was unused
 
 export default function AgenteAci() {
   const {
@@ -36,45 +35,40 @@ export default function AgenteAci() {
     }
   };
 
-  const [showOneDrive, setShowOneDrive] = useState(false);
-  const [showObsidian, setShowObsidian] = useState(false);
-  // Estados para modais dos importadores
-  const [showGoogleDrive, setShowGoogleDrive] = useState(false);
+  // Centralized state for managing which importer modal is active
+  const [activeImporter, setActiveImporter] = useState(null); // e.g., 'googleDrive', 'trello', 'oneDrive'
   const [googleAccessToken, setGoogleAccessToken] = useState(null);
-  const [showTrello, setShowTrello] = useState(false);
-  const [showNotion, setShowNotion] = useState(false);
-  const [showOneNote, setShowOneNote] = useState(false);
 
   // Handlers para cada importador
   const handleObsidianImport = (items) => {
     if (items && items.length > 0) {
       handleTextChange(items[0].normalizedText);
     } else {
-      setMessage("Nenhum item foi selecionado do Obsidian.");
+      setMessage('Nenhum item foi selecionado do Obsidian.');
     }
-    setShowObsidian(false);
+    setActiveImporter(null);
   };
   const handleGoogleDriveImport = (processed) => {
     handleTextChange(processed.normalizedText);
-    setShowGoogleDrive(false);
+    setActiveImporter(null);
   };
   const handleTrelloImport = (processed) => {
     handleTextChange(processed.normalizedText);
-    setShowTrello(false);
+    setActiveImporter(null);
   };
   const handleNotionImport = (processed) => {
     handleTextChange(processed.normalizedText);
-    setShowNotion(false);
+    setActiveImporter(null);
   };
   const handleOneNoteImport = (processed) => {
     handleTextChange(processed.normalizedText);
-    setShowOneNote(false);
+    setActiveImporter(null);
   };
 
   // Lógica de autenticação e importação do Google Drive
   const handleGoogleLoginSuccess = (tokenResponse) => {
     setGoogleAccessToken(tokenResponse.access_token);
-    setShowGoogleDrive(true); // Abre o seletor de arquivos após o login
+    setActiveImporter('googleDrive'); // Abre o seletor de arquivos após o login
   };
 
   const googleLogin = useGoogleLogin({
@@ -83,7 +77,6 @@ export default function AgenteAci() {
       setMessage('Falha na autenticação com o Google.');
     },
     scope: 'https://www.googleapis.com/auth/drive.readonly',
-    flow: 'implicit',
   });
 
   const handleGoogleDriveClick = () => {
@@ -106,7 +99,7 @@ export default function AgenteAci() {
 
   const handleOneDriveFileSelect = (content) => {
     handleTextChange(content);
-    setShowOneDrive(false);
+    setActiveImporter(null);
   };
 
   return (
@@ -136,45 +129,47 @@ export default function AgenteAci() {
         {selectedFile && <p className="text-center text-sm">Arquivo escolhido: {selectedFile.name}</p>}
         <div className="text-center">Ou importe de outras fontes</div>
         <div className="flex justify-center gap-2">
-          <button onClick={() => setShowTrello(true)} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800">Trello</button>
+          <button onClick={() => setActiveImporter('trello')} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800">Trello</button>
           <button onClick={handleGoogleDriveClick} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">GoogleDrive</button>
-          <button onClick={() => setShowObsidian(!showObsidian)} className="px-4 py-2 bg-purple-700 text-white rounded hover:bg-purple-800">Obsidian</button>
-        {showObsidian && <ObsidianImporter onImport={handleObsidianImport} />}
-          <button onClick={() => setShowOneDrive(!showOneDrive)} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">OneDrive</button>
-          <button onClick={() => setShowOneNote(true)} className="px-4 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800">OneNote</button>
-          <button onClick={() => setShowNotion(true)} className="px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Notion</button>
-        {showGoogleDrive && googleAccessToken && (
+          <button onClick={() => setActiveImporter('obsidian')} className="px-4 py-2 bg-purple-700 text-white rounded hover:bg-purple-800">Obsidian</button>
+          <button onClick={() => setActiveImporter('oneDrive')} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">OneDrive</button>
+          <button onClick={() => setActiveImporter('oneNote')} className="px-4 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800">OneNote</button>
+          <button onClick={() => setActiveImporter('notion')} className="px-4 py-2 bg-black text-white rounded hover:bg-gray-800">Notion</button>
+        </div>
+
+        {/* Modals are now rendered based on the activeImporter state */}
+        {activeImporter === 'obsidian' && <ObsidianImporter onImport={handleObsidianImport} onClose={() => setActiveImporter(null)} />}
+        {activeImporter === 'googleDrive' && googleAccessToken && (
           <GoogleDriveImporter
-            isOpen={showGoogleDrive}
-            onClose={() => setShowGoogleDrive(false)}
+            isOpen={activeImporter === 'googleDrive'}
+            onClose={() => setActiveImporter(null)}
             accessToken={googleAccessToken}
+            developerKey={import.meta.env.VITE_GOOGLE_API_KEY}
             handleTextSelect={handleGoogleDriveImport}
           />
         )}
-        {showTrello && (
+        {activeImporter === 'trello' && (
           <TrelloImporter
-            isOpen={showTrello}
-            onClose={() => setShowTrello(false)}
+            isOpen={activeImporter === 'trello'}
+            onClose={() => setActiveImporter(null)}
             onImport={handleTrelloImport}
           />
         )}
-        {showNotion && (
+        {activeImporter === 'notion' && (
           <NotionImporter
-            isOpen={showNotion}
-            onClose={() => setShowNotion(false)}
+            isOpen={activeImporter === 'notion'}
+            onClose={() => setActiveImporter(null)}
             onImport={handleNotionImport}
           />
         )}
-        {showOneNote && (
+        {activeImporter === 'oneNote' && (
           <OneNoteImporter
-            isOpen={showOneNote}
-            onClose={() => setShowOneNote(false)}
+            isOpen={activeImporter === 'oneNote'}
+            onClose={() => setActiveImporter(null)}
             onImport={handleOneNoteImport}
           />
         )}
-        </div>
-
-        {showOneDrive && <OneDrivePicker onFileSelect={handleOneDriveFileSelect} setMessage={setMessage} setOcrProgress={setOcrProgress} />}
+        {activeImporter === 'oneDrive' && <OneDrivePicker onFileSelect={handleOneDriveFileSelect} setMessage={setMessage} setOcrProgress={setOcrProgress} />}
 
         <button onClick={processContent} disabled={isProcessing} className="w-full p-2 mt-4 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400">
           {isProcessing ? 'Processando...' : 'Processar'}

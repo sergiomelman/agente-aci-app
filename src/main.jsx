@@ -3,35 +3,45 @@ import ReactDOM from 'react-dom/client';
 import AgenteAci from './agents/AgenteAci.jsx';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import './index.css';
-import { PublicClientApplication } from '@azure/msal-browser';
+import { PublicClientApplication, BrowserUtils } from '@azure/msal-browser';
 import { MsalProvider } from '@azure/msal-react';
-
-// Configuração do MSAL (Microsoft Authentication Library)
-const MSAL_CLIENT_ID = import.meta.env.VITE_MSAL_CLIENT_ID;
-const msalConfig = {
-  auth: {
-    // O Client ID é carregado a partir das variáveis de ambiente para segurança.
-    // Certifique-se de que VITE_MSAL_CLIENT_ID está definido no seu arquivo .env
-    clientId: MSAL_CLIENT_ID,
-    authority: 'https://login.microsoftonline.com/common',
-    redirectUri: window.location.origin,
-  },
-  cache: {
-    cacheLocation: 'sessionStorage',
-    storeAuthStateInCookie: false,
-  },
-};
+import { msalConfig } from './authConfig.js';
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+/**
+ * A MSAL recomenda chamar handleRedirectPromise em todos os carregamentos de página.
+ * Ele lidará com quaisquer respostas de autenticação retornadas de um fluxo de redirecionamento.
+ * No caso de um pop-up, ele processará o hash e fechará a janela.
+ * Na janela principal, ele resolverá com null e o aplicativo será renderizado.
+ */
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <MsalProvider instance={msalInstance}>
-        <AgenteAci />
-      </MsalProvider>
-    </GoogleOAuthProvider>
-  </React.StrictMode>
-);
+// MSAL v3+ requer que `initialize` seja chamado antes de qualquer outra API MSAL.
+// É assíncrono e retorna uma promessa que resolve quando a inicialização está completa.
+msalInstance
+  .initialize()
+  .then(() => {
+    msalInstance
+      .handleRedirectPromise()
+      .then((response) => {
+        // Se não estivermos em um pop-up, renderize o aplicativo.
+        if (!BrowserUtils.isInPopup() && !BrowserUtils.isInIframe()) {
+          const root = ReactDOM.createRoot(document.getElementById('root'));
+          root.render(
+            <React.StrictMode>
+              <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
+                <MsalProvider instance={msalInstance}>
+                  <AgenteAci />
+                </MsalProvider>
+              </GoogleOAuthProvider>
+            </React.StrictMode>
+          );
+        }
+      })
+      .catch((error) => {
+        console.error('MSAL handleRedirectPromise error:', error);
+      });
+  })
+  .catch((error) => {
+    console.error('MSAL initialize error:', error);
+  });
