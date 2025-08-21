@@ -1,18 +1,30 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 
 const SearchBar = ({ onSearch, isLoading }) => {
   const [query, setQuery] = useState('');
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (query.trim() && !isLoading) {
-      onSearch(query);
+  // Lógica de Debounce
+  useEffect(() => {
+    // Não aciona a busca se a query for vazia ou se já estiver buscando
+    if (query.trim() === '' || isLoading) {
+      return;
     }
-  };
+
+    const timer = setTimeout(() => {
+      onSearch(query);
+    }, 300); // Atraso de 300ms antes de fazer a busca
+
+    // Limpa o timer se o usuário continuar digitando
+    return () => {
+      clearTimeout(timer);
+    };
+    // A dependência `onSearch` foi removida para evitar recriação do timer
+    // se a função for recriada no componente pai. Use useCallback no App.jsx se necessário.
+  }, [query, isLoading]);
 
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-4xl mx-auto my-4">
+    <form onSubmit={(e) => e.preventDefault()} className="w-full max-w-4xl mx-auto my-4">
       <div className="relative">
         <input
           type="search"
@@ -23,6 +35,7 @@ const SearchBar = ({ onSearch, isLoading }) => {
           disabled={isLoading}
         />
         <button
+          // O botão agora é opcional, mas pode ser mantido para acessibilidade e preferência do usuário
           type="submit"
           className="absolute top-1/2 right-2 -translate-y-1/2 px-6 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-800 transition"
           disabled={isLoading}

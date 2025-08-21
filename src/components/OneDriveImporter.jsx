@@ -1,45 +1,9 @@
-import React, { useReducer, useEffect, useCallback } from 'react';
-import { useMsal, useIsAuthenticated, InteractionStatus } from '@azure/msal-react';
+import React, { useEffect } from 'react';
+import { useMsal, useIsAuthenticated } from "@azure/msal-react";
+import { InteractionStatus } from "@azure/msal-browser"; // Corrigido
 import Modal from '@/components/Modal';
-import * as microsoftApi from '@/services/microsoftApi';
 import PropTypes from 'prop-types';
-
-const initialState = {
-  files: [],
-  nextPageToken: null,
-  loading: false,
-  loadingMore: false,
-  error: '',
-};
-
-function reducer(state, action) {
-  switch (action.type) {
-    case 'FETCH_START':
-      return { ...state, loading: true, error: '', files: [], nextPageToken: null };
-    case 'FETCH_SUCCESS':
-      return {
-        ...state,
-        loading: false,
-        files: action.payload.files,
-        nextPageToken: action.payload.nextPageToken,
-      };
-    case 'FETCH_MORE_START':
-      return { ...state, loadingMore: true, error: '' };
-    case 'FETCH_MORE_SUCCESS':
-      return {
-        ...state,
-        loadingMore: false,
-        files: [...state.files, ...action.payload.files],
-        nextPageToken: action.payload.nextPageToken,
-      };
-    case 'FETCH_ERROR':
-      return { ...state, loading: false, loadingMore: false, error: action.payload };
-    case 'RESET':
-      return initialState;
-    default:
-      throw new Error(`Ação não tratada: ${action.type}`);
-  }
-}
+import { useOneDriveFiles } from '@/hooks/useOneDriveFiles';
 
 const getFileIcon = (fileName) => {
   if (fileName.endsWith('.docx')) return '📄';
@@ -62,33 +26,21 @@ const FileItem = ({ file, onSelect }) => (
 FileItem.propTypes = { file: PropTypes.object.isRequired, onSelect: PropTypes.func.isRequired };
 
 const OneDriveImporter = ({ isOpen, onClose, onFileSelect }) => {
-  const { instance, accounts, inProgress } = useMsal();
+  const { inProgress } = useMsal();
   const isAuthenticated = useIsAuthenticated();
-  const [state, dispatch] = useReducer(reducer, initialState);
-  const { files, loading, loadingMore, error, nextPageToken } = state;
-
-  const account = accounts[0];
-
-  const fetchFiles = useCallback(async (token) => {
-    if (!isAuthenticated || !account) return;
-
-    dispatch({ type: token ? 'FETCH_MORE_START' : 'FETCH_START' });
-    try {
-      const result = await microsoftApi.listFiles(instance, account, token);
-      dispatch({
-        type: token ? 'FETCH_MORE_SUCCESS' : 'FETCH_SUCCESS',
-        payload: result,
-      });
-    } catch (err) {
-      dispatch({ type: 'FETCH_ERROR', payload: `Falha ao buscar arquivos do OneDrive. ${err.message}` });
-    }
-  }, [instance, account, isAuthenticated]);
+  // Utiliza o hook centralizado para buscar os arquivos
+  const { files, isLoading, error, fetchFiles, reset } = useOneDriveFiles();
 
   useEffect(() => {
-    if (isOpen && isAuthenticated && inProgress === InteractionStatus.None && files.length === 0) {
-      fetchFiles(null);
+    // Busca os arquivos quando o modal é aberto e o usuário está autenticado.
+    if (isOpen && isAuthenticated && inProgress === InteractionStatus.None) {
+      fetchFiles();
     }
-  }, [isOpen, isAuthenticated, inProgress, files.length, fetchFiles]);
+    // Limpa o estado quando o modal é fechado.
+    if (!isOpen) {
+      reset();
+    }
+  }, [isOpen, isAuthenticated, inProgress, fetchFiles, reset]);
 
   const handleSelectFile = (file) => {
     // Passa o objeto de arquivo da API diretamente para o processador
@@ -97,18 +49,17 @@ const OneDriveImporter = ({ isOpen, onClose, onFileSelect }) => {
   };
 
   const handleClose = () => {
-    dispatch({ type: 'RESET' });
     onClose();
   };
 
   const renderContent = () => {
-    if (loading && files.length === 0) return <div className="text-center p-8 text-gray-500">Carregando arquivos do OneDrive...</div>;
+    if (isLoading && files.length === 0) return <div className="text-center p-8 text-gray-500">Carregando arquivos do OneDrive...</div>;
     if (error) return <div className="text-center p-8 text-red-500">{error}</div>;
     if (files.length === 0) return <div className="text-center p-8 text-gray-500">Nenhum arquivo compatível (.docx, .pdf, .txt) encontrado.</div>;
 
     return (
       <ul className="space-y-2 max-h-96 overflow-y-auto p-1">
-        {files.map((file) => <FileItem key={file.id} file={file} onSelect={handleSelectFile} disabled={loading} />)}
+        {files.map((file) => <FileItem key={file.id} file={file} onSelect={handleSelectFile} />)}
       </ul>
     );
   };
@@ -118,6 +69,12 @@ const OneDriveImporter = ({ isOpen, onClose, onFileSelect }) => {
       {renderContent()}
     </Modal>
   );
+};
+
+OneDriveImporter.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  onFileSelect: PropTypes.func.isRequired,
 };
 
 export default OneDriveImporter;

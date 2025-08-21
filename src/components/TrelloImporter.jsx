@@ -1,131 +1,149 @@
-import React, { useState, useEffect } from 'react';
-import Modal from '@/components/Modal';
-import * as trelloApi from '@/services/trelloApi';
-import { processContent } from '../utils/processContent';
+import React, { useState, useEffect, useCallback } from 'react';
+import Modal from './Modal';
 
-// Helper para formatar os dados do cartão em um texto limpo
-const formatCardContent = (card) => {
-  const parts = [`Título: ${card.name}`];
-
-  if (card.desc) {
-    parts.push(`Descrição:\n${card.desc}`);
+// Helper para fazer chamadas à API do backend que atua como proxy para o Trello.
+const fetchFromApi = async (endpoint) => {
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    const errorText = await response.text();
+    try {
+      const errorBody = JSON.parse(errorText);
+      throw new Error(errorBody.message || `Falha na API do Trello (Status: ${response.status})`);
+    } catch (e) {
+      // Se o erro for de parse, significa que a resposta não foi JSON (provavelmente HTML de erro)
+      if (e instanceof SyntaxError) {
+        throw new Error(`Falha na API. O servidor respondeu com status ${response.status}. Detalhes: ${errorText || '(sem corpo na resposta)'}`);
+      }
+      throw e; // Relança o erro vindo do `try` block
+    }
   }
-
-  if (card.checklists && card.checklists.length > 0) {
-    card.checklists.forEach(checklist => {
-      const checklistItems = [`Checklist "${checklist.name}":`];
-      checklist.checkItems.forEach(item => {
-        checklistItems.push(`- [${item.state === 'complete' ? 'x' : ' '}] ${item.name}`);
-      });
-      parts.push(checklistItems.join('\n'));
-    });
-  }
-  return parts.join('\n\n');
+  return response.json();
 };
 
 const TrelloImporter = ({ isOpen, onClose, onImport }) => {
-  const [step, setStep] = useState('boards'); // boards, lists, cards
-  const [boards, setBoards] = useState([]);
-  const [lists, setLists] = useState([]);
-  const [cards, setCards] = useState([]);
+  const [step, setStep] = useState('boards'); // 'boards', 'lists', 'cards'
+  const [items, setItems] = useState([]);
   const [selectedBoard, setSelectedBoard] = useState(null);
-  const [selectedList, setSelectedList] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [title, setTitle] = useState('Importar do Trello: Quadros');
 
-  // Busca os quadros quando o modal abre
-  useEffect(() => {
-    if (isOpen) {
-      setLoading(true);
-      setError('');
-      trelloApi.getBoards()
-        .then(data => {
-          setBoards(data.filter(b => !b.closed)); // Filtra quadros fechados
-          setStep('boards');
-        })
-        .catch(err => setError(`Falha ao buscar quadros. ${err.message}`))
-        .finally(() => setLoading(false));
-    }
-  }, [isOpen]);
-
-  const handleSelectBoard = (board) => {
-    setSelectedBoard(board);
-    setLoading(true);
+  const resetState = useCallback(() => {
+    setStep('boards');
+    setItems([]);
+    setSelectedBoard(null);
     setError('');
-    trelloApi.getLists(board.id)
-      .then(data => { setLists(data); setStep('lists'); })
-      .catch(err => setError(`Falha ao buscar listas. ${err.message}`))
-      .finally(() => setLoading(false));
-  };
+    setTitle('Importar do Trello: Quadros');
+  }, []);
 
-  const handleSelectList = (list) => {
-    setSelectedList(list);
-    setLoading(true);
-    setError('');
-    trelloApi.getCards(list.id)
-      .then(data => { setCards(data); setStep('cards'); })
-      .catch(err => setError(`Falha ao buscar cartões. ${err.message}`))
-      .finally(() => setLoading(false));
-  };
-
-  const handleSelectCard = async (card) => {
+  const fetchBoards = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const cardDetails = await trelloApi.getCardDetails(card.id);
-      const formattedContent = formatCardContent(cardDetails);
-      const processed = await processContent(formattedContent);
-      onImport(processed);
-      handleClose();
+      const data = await fetchFromApi('/api/trello/boards');
+      setItems(data);
     } catch (err) {
-      setError(`Falha ao buscar detalhes do cartão. ${err.message}`);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleBack = () => {
-    if (step === 'cards') setStep('lists');
-    if (step === 'lists') setStep('boards');
-  };
+  // Fetch boards when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      fetchBoards();
+    } else {
+      resetState();
+    }
+  }, [isOpen, resetState, fetchBoards]);
 
-  const handleClose = () => {
-    setStep('boards'); setBoards([]); setLists([]); setCards([]);
-    setSelectedBoard(null); setSelectedList(null); setError('');
-    onClose();
-  };
+  const handleBoardSelect = useCallback(async (board) => {
+    setLoading(true);
+    setError('');
+    setSelectedBoard(board);
+    setTitle(`Quadro: ${board.name} > Listas`);
+    setStep('lists');
+    try {
+      const data = await fetchFromApi(`/api/trello/boards/${board.id}/lists`);
+      setItems(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleListSelect = useCallback(async (list) => {
+    setLoading(true);
+    setError('');
+    setTitle(`Quadro: ${selectedBoard.name} > Lista: ${list.name} > Cartões`);
+    setStep('cards');
+    try {
+      const data = await fetchFromApi(`/api/trello/lists/${list.id}/cards`);
+      setItems(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedBoard]);
+
+  const handleCardSelect = useCallback(async (card) => {
+    setLoading(true);
+    setError('');
+    try {
+      const cardDetails = await fetchFromApi(`/api/trello/cards/${card.id}`);
+      onImport({
+        title: cardDetails.name,
+        normalizedText: cardDetails.desc,
+      });
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onImport, onClose]);
+
+  const handleBack = useCallback(async () => {
+    setError('');
+    if (step === 'cards') {
+      await handleBoardSelect(selectedBoard); // Go back to lists
+    } else if (step === 'lists') {
+      resetState();
+      await fetchBoards();
+    }
+  }, [step, selectedBoard, handleBoardSelect, resetState, fetchBoards]);
 
   const renderContent = () => {
-    if (loading) return <div className="text-center p-8">Carregando...</div>;
-    if (error) return <div className="text-center p-8 text-red-500">{error}</div>;
+    if (loading) return <div className="p-4 text-center">Carregando...</div>;
+    if (error) return <div className="p-4 text-red-500">{error}</div>;
+    if (items.length === 0) return <div className="p-4 text-center text-gray-500">Nenhum item encontrado.</div>;
 
-    const renderList = (items, onSelect, key, name) => (
-      <ul className="space-y-2">{items.map(item => (
-          <li key={item[key]} onClick={() => onSelect(item)}
-              className="p-3 bg-gray-100 rounded-md hover:bg-blue-100 cursor-pointer transition-colors">
-            {item[name]}
-          </li>))}
+    const handler = {
+      boards: handleBoardSelect,
+      lists: handleListSelect,
+      cards: handleCardSelect,
+    }[step];
+
+    return (
+      <ul className="space-y-2">
+        {items.map(item => (
+          <li key={item.id} onClick={() => handler(item)} className="p-3 bg-gray-100 rounded-md hover:bg-blue-100 cursor-pointer transition-colors">
+            {item.name}
+          </li>
+        ))}
       </ul>
     );
-
-    switch (step) {
-      case 'boards': return renderList(boards, handleSelectBoard, 'id', 'name');
-      case 'lists': return renderList(lists, handleSelectList, 'id', 'name');
-      case 'cards': return renderList(cards, handleSelectCard, 'id', 'name');
-      default: return null;
-    }
-  };
-
-  const getTitle = () => {
-    if (step === 'lists') return `Quadro: ${selectedBoard?.name} > Selecione uma Lista`;
-    if (step === 'cards') return `Lista: ${selectedList?.name} > Selecione um Cartão`;
-    return 'Importar do Trello: Selecione um Quadro';
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title={getTitle()}>
-      {step !== 'boards' && !loading && (
-        <button onClick={handleBack} className="mb-4 text-sm text-blue-600 hover:underline">&larr; Voltar</button>
+    <Modal isOpen={isOpen} onClose={onClose} title={title}>
+      {step !== 'boards' && (
+        <button onClick={handleBack} className="mb-4 text-sm text-blue-600 hover:underline">
+          &larr; Voltar
+        </button>
       )}
       {renderContent()}
     </Modal>

@@ -35,6 +35,7 @@ export const listAllFilesRecursive = async (msalInstance, account, folderId = 'r
 };
 import { Client, ResponseType } from '@microsoft/microsoft-graph-client';
 import mammoth from 'mammoth';
+import { loginRequest } from '../authConfig';
 
 /**
  * Cria e retorna um cliente do Microsoft Graph autenticado.
@@ -48,7 +49,7 @@ const getAuthenticatedClient = (msalInstance, account) => Client.initWithMiddlew
     getAccessToken: async () => {
       try {
         const response = await msalInstance.acquireTokenSilent({
-          scopes: ['Files.Read.All'],
+          scopes: loginRequest.scopes,
           account,
         });
         return response.accessToken;
@@ -133,5 +134,77 @@ export const getDocxContent = async (blob) => {
   } catch (error) {
     console.error('Erro ao extrair conteúdo do DOCX:', error);
     throw new Error(`Falha ao processar arquivo .docx. ${error.message}`);
+  }
+};
+
+/**
+ * Lista todos os blocos de anotações do OneNote do usuário.
+ * @param {import('@azure/msal-browser').IPublicClientApplication} msalInstance
+ * @param {import('@azure/msal-browser').AccountInfo} account
+ * @returns {Promise<Array>} - Lista de blocos de anotações.
+ */
+export const listNotebooks = async (msalInstance, account) => {
+  const graphClient = getAuthenticatedClient(msalInstance, account);
+  try {
+    const response = await graphClient.api('/me/onenote/notebooks').select('id,displayName').get();
+    return response.value;
+  } catch (error) {
+    console.error('Erro ao listar blocos de anotações do OneNote:', error);
+    throw new Error(`Falha ao buscar blocos de anotações do OneNote. ${error.message}`);
+  }
+};
+
+/**
+ * Lista todas as seções de um bloco de anotações específico.
+ * @param {import('@azure/msal-browser').IPublicClientApplication} msalInstance
+ * @param {import('@azure/msal-browser').AccountInfo} account
+ * @param {string} notebookId - O ID do bloco de anotações.
+ * @returns {Promise<Array>} - Lista de seções.
+ */
+export const listSections = async (msalInstance, account, notebookId) => {
+  const graphClient = getAuthenticatedClient(msalInstance, account);
+  try {
+    const response = await graphClient.api(`/me/onenote/notebooks/${notebookId}/sections`).select('id,displayName').get();
+    return response.value;
+  } catch (error) {
+    console.error(`Erro ao listar seções do bloco de anotações ${notebookId}:`, error);
+    throw new Error(`Falha ao buscar seções do OneNote. ${error.message}`);
+  }
+};
+
+/**
+ * Lista todas as páginas de uma seção específica.
+ * @param {import('@azure/msal-browser').IPublicClientApplication} msalInstance
+ * @param {import('@azure/msal-browser').AccountInfo} account
+ * @param {string} sectionId - O ID da seção.
+ * @returns {Promise<Array>} - Lista de páginas.
+ */
+export const listPages = async (msalInstance, account, sectionId) => {
+  const graphClient = getAuthenticatedClient(msalInstance, account);
+  try {
+    const response = await graphClient.api(`/me/onenote/sections/${sectionId}/pages`).select('id,title').get();
+    return response.value;
+  } catch (error) {
+    console.error(`Erro ao listar páginas da seção ${sectionId}:`, error);
+    throw new Error(`Falha ao buscar páginas do OneNote. ${error.message}`);
+  }
+};
+
+/**
+ * Obtém o conteúdo HTML de uma página específica do OneNote.
+ * @param {import('@azure/msal-browser').IPublicClientApplication} msalInstance
+ * @param {import('@azure/msal-browser').AccountInfo} account
+ * @param {string} pageId - O ID da página.
+ * @returns {Promise<string>} - O conteúdo da página como HTML.
+ */
+export const getPageContent = async (msalInstance, account, pageId) => {
+  const graphClient = getAuthenticatedClient(msalInstance, account);
+  try {
+    // O conteúdo da página é retornado diretamente no corpo da resposta.
+    const response = await graphClient.api(`/me/onenote/pages/${pageId}/content`).get();
+    return response;
+  } catch (error) {
+    console.error(`Erro ao buscar conteúdo da página ${pageId}:`, error);
+    throw new Error(`Falha ao buscar conteúdo da página do OneNote. ${error.message}`);
   }
 };

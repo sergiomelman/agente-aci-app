@@ -12,6 +12,8 @@ function App() {
 
   // --- ESTADO PARA O AGENTE DE RECUPERAÇÃO (ARS) ---
   const [searchResults, setSearchResults] = useState(null); // null: sem busca, []: sem resultados, [...]: com resultados
+  const [currentQuery, setCurrentQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
 
@@ -47,22 +49,32 @@ function App() {
 
   /**
    * Função para lidar com a busca semântica.
+   * Agora com suporte a paginação.
    * Ela chama o endpoint /api/search do backend.
    */
-  const handleSearch = async (query) => {
+  const handleSearch = async (query, page = 1) => {
     setIsSearching(true);
     setSearchError('');
-    setSearchResults(null);
+    
+    // Se é uma nova busca, reseta os resultados
+    if (page === 1) {
+      setSearchResults(null);
+      setCurrentQuery(query);
+    }
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
+      const response = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}&page=${page}&limit=10`);
       const data = await response.json();
 
       if (!response.ok || !data.success) {
         throw new Error(data.message || 'A busca falhou.');
       }
 
-      setSearchResults(data.results);
+      // Acumula os resultados em vez de substituir
+      setSearchResults(prevResults => (page === 1 ? data.results : [...(prevResults || []), ...data.results]));
+      setCurrentPage(page);
+      // A API deveria informar se há mais páginas para carregar
+      // setHasMoreResults(data.hasMore || false);
     } catch (error) {
       setSearchError(error.message);
     } finally {
@@ -84,6 +96,10 @@ function App() {
           <SearchBar onSearch={handleSearch} isLoading={isSearching} />
           {searchError && <div className="text-center text-red-500 p-2 mt-4 bg-red-100 dark:bg-red-900/20 rounded-md">{searchError}</div>}
           <SearchResults results={searchResults} isLoading={isSearching} />
+          {/* Exemplo de botão para carregar mais */}
+          {searchResults && searchResults.length > 0 && !isSearching && (
+            <div className="text-center mt-4"><button onClick={() => handleSearch(currentQuery, currentPage + 1)}>Carregar mais</button></div>
+          )}
         </section>
 
         <hr className="my-16 border-gray-300 dark:border-gray-700" />

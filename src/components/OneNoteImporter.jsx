@@ -1,48 +1,71 @@
-import React, { useState } from 'react';
-import Modal from '@/components/Modal';
-import { processContent } from '../utils/processContent';
+import React, { useCallback, useState } from 'react';
+import { useMsal } from '@azure/msal-react';
+import { InteractionStatus, InteractionRequiredAuthError } from "@azure/msal-browser";
+import ImporterModal from './ImporterModal';
+import { loginRequest } from '../authConfig';
 
-// Exemplo de páginas mockadas (substitua pela busca real na API do OneNote)
-const mockPages = [
-  { id: '1', title: 'Anotação de Reunião', content: 'Resumo da reunião de projeto.' },
-  { id: '2', title: 'Ideias para o Segundo Cérebro', content: 'Lista de ideias e melhorias para o projeto.' },
-];
+const fetchOneNotePages = async (instance, accounts, inProgress) => {
+  if (inProgress !== InteractionStatus.None) {
+    throw new Error('Autenticação em andamento. Aguarde...');
+  }
 
-const OneNoteImporter = ({ isOpen, onClose, onImport }) => {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSelectPage = async (page) => {
-    setLoading(true);
-    setError('');
-    try {
-      // Aqui você faria a requisição real à API do OneNote para obter o conteúdo da página
-      const processed = await processContent(page.content);
-      onImport(processed);
-      onClose();
-    } catch (err) {
-      setError('Erro ao importar página do OneNote.');
-    } finally {
-      setLoading(false);
-    }
+  const request = {
+    ...loginRequest,
+    account: accounts[0],
   };
 
+  try {
+    const tokenResponse = await instance.acquireTokenSilent(request);
+    const accessToken = tokenResponse.accessToken;
+    
+    const graphResponse = await fetch('https://graph.microsoft.com/v1.0/me/onenote/pages', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await graphResponse.json();
+    return data.value || [];
+
+  } catch (error) {
+    if (error instanceof InteractionRequiredAuthError && inProgress === InteractionStatus.None) {
+      await instance.acquireTokenPopup(request);
+      // Retry the fetch after getting new token
+      return fetchOneNotePages(instance, accounts, inProgress);
+    }
+    throw error;
+  }
+};
+
+const OneNoteImporter = ({ isOpen, onClose, onImport }) => {
+  const { instance, accounts, inProgress } = useMsal();
+  const [error, setError] = useState(null);
+
+  // Use useCallback para evitar recriar a função a cada renderização
+  const getPages = useCallback(async () => {
+    try {
+      const pages = await fetchOneNotePages(instance, accounts, inProgress);
+      if (!pages.length) {
+        setError("Nenhuma página encontrada no OneNote");
+      }
+      return pages;
+    } catch (error) {
+      console.error("Erro ao buscar páginas:", error);
+      setError("Erro ao acessar o OneNote. Tente novamente.");
+      return [];
+    }
+  }, [instance, accounts, inProgress]);
+
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Importar do OneNote">
-      {loading ? (
-        <div className="p-4 text-center">Carregando...</div>
-      ) : error ? (
-        <div className="p-4 text-red-500">{error}</div>
-      ) : (
-        <ul className="space-y-2">
-          {mockPages.map(page => (
-            <li key={page.id} onClick={() => handleSelectPage(page)} className="p-3 bg-gray-100 rounded-md hover:bg-blue-100 cursor-pointer transition-colors">
-              {page.title}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Modal>
+    <ImporterModal
+      isOpen={isOpen}
+      onClose={onClose}
+      onImport={onImport}
+      title="Importar do OneNote"
+      fetchPages={getPages}
+      sourceName="OneNote"
+    />
   );
 };
 

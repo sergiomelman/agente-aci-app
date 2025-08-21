@@ -1,60 +1,107 @@
 import React, { useState } from 'react';
-import { useGoogleLogin, googleLogout } from '@react-oauth/google';
-import GoogleDriveImporter from './GoogleDriveImporter';
+import { useGoogleLogin } from '@react-oauth/google';
+import ImporterModal from './ImporterModal';
 
-export default function GoogleDriveAuthImporter({ onImport }) {
-  const [accessToken, setAccessToken] = useState(null);
-  const [showImporter, setShowImporter] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  const handleLoginSuccess = (credentialResponse) => {
-    // O token de acesso está em credentialResponse.access_token com useGoogleLogin
-    setAccessToken(credentialResponse.access_token);
-    setShowImporter(true);
-  };
-
-  const login = useGoogleLogin({
-    onSuccess: handleLoginSuccess,
-    onError: () => alert('Erro ao autenticar com o Google'),
-    scope: 'https://www.googleapis.com/auth/drive.readonly',
-    flow: 'implicit', // Garante que o access_token seja retornado
+// Função para buscar arquivos da API do Google Drive
+const fetchGoogleDriveFiles = async (token) => {
+  const response = await fetch('https://www.googleapis.com/drive/v3/files?q=mimeType!%3D%27application%2Fvnd.google-apps.folder%27&fields=files(id,name,mimeType)', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   });
 
-  const handleLogout = () => {
-    setAccessToken(null);
-    setShowImporter(false);
-    setIsExpanded(false);
-    googleLogout();
+  if (!response.ok) {
+    throw new Error('Falha ao buscar arquivos do Google Drive.');
+  }
+
+  const data = await response.json();
+  return data.files.map(file => ({
+    id: file.id,
+    title: file.name,
+    mimeType: file.mimeType,
+  }));
+};
+
+// Função para buscar o conteúdo de um arquivo específico
+const fetchFileContent = async (file, token) => {
+    const isGoogleDoc = file.mimeType.includes('google-apps');
+    const exportMimeType = 'text/plain';
+    const url = isGoogleDoc
+        ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=${exportMimeType}`
+        : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+
+    const response = await fetch(url, {
+        headers: {
+            Authorization: `Bearer ${token}`,
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`Falha ao buscar conteúdo do arquivo: ${file.title}`);
+    }
+
+    return response.text();
+};
+
+export default function GoogleDriveAuthImporter({ onImport }) {
+  const [token, setToken] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [error, setError] = useState('');
+
+  const login = useGoogleLogin({
+    onSuccess: (codeResponse) => {
+        setError('');
+        // O backend agora lidará com a troca do código pelo access_token
+        fetch('http://localhost:3001/api/google-drive/exchange-code', {
+            method: 'POST',
+            headers: {
+            'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ code: codeResponse.code }),
+        })
+        .then((res) => res.json())
+        .then((data) => {
+            if (data.access_token) {
+                setToken(data.access_token);
+                setModalOpen(true); // Abre o modal após obter o token
+            } else {
+                throw new Error(data.error || 'Falha ao obter o token de acesso.');
+            }
+        })
+        .catch((err) => setError(err.message || 'Erro ao obter o token de acesso do Google Drive.'));
+    },
+    onError: () => setError('Falha no login com o Google.'),
+    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    flow: 'auth-code', // Fluxo recomendado e mais seguro
+  });
+
+  const handleCloseModal = () => {
+    setModalOpen(false);
+    setToken(null); // Limpa o token ao fechar o modal para permitir novo login se necessário
+    setError('');
   };
 
   return (
-    <div className="p-4 border rounded mb-4">
-      <h2 className="font-bold mb-2">Importar do Google Drive</h2>
-      {!accessToken ? (
-        <>
-          <button
-            onClick={() => setIsExpanded(true)}
-            disabled={isExpanded}
-            className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 disabled:bg-gray-400"
-          >
-            Google Drive
-          </button>
-          {isExpanded && (
-            <div className="mt-4">
-              <p className="mb-2">Faça login para importar seus arquivos do Google Drive.</p>
-              <button onClick={() => login()} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-                Entrar com o Google
-              </button>
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          <button onClick={handleLogout} className="bg-red-600 text-white px-4 py-2 rounded mb-2">Sair do Google</button>
-          <button onClick={() => setShowImporter(true)} className="bg-blue-600 text-white px-4 py-2 rounded mb-2 ml-2">Abrir Importador</button>
-        </>
+    <div className="p-4 border rounded mb-4 bg-white dark:bg-gray-800">
+      <h2 className="font-bold mb-2 text-gray-800 dark:text-gray-200">Importar do Google Drive</h2>
+      <button
+        onClick={() => login()}
+        className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
+      >
+        Conectar ao Google Drive
+      </button>
+      {error && <p className="text-red-500 mt-2">{error}</p>}
+      {modalOpen && token && (
+        <ImporterModal
+          isOpen={modalOpen}
+          onClose={handleCloseModal}
+          onImport={onImport}
+          title="Importar do Google Drive"
+          fetchPages={() => fetchGoogleDriveFiles(token)}
+          getPageContent={(file) => fetchFileContent(file, token)}
+          sourceName="Google Drive"
+        />
       )}
-      {showImporter && accessToken && <GoogleDriveImporter isOpen={showImporter} onClose={() => setShowImporter(false)} accessToken={accessToken} handleTextSelect={onImport} />}
     </div>
   );
 }
